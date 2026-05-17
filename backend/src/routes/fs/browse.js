@@ -52,6 +52,20 @@ const normalizeSummarySource = (raw) => {
 
 // 目录摘要计算（compute）singleflight：同一 mount + 同一路径 + 同一用户上下文并发时只算一次。
 // 目的：避免 TTL 较短或多人同时刷新导致“递归遍历”被放大成 N 倍。
+// 超时保护：防止异步操作挂起导致后续请求永远等待同一个 dead Promise
+const BROWSE_INFLIGHT_TIMEOUT_MS = 120 * 1000; // 2 分钟（遍历可能较慢）
+
+function setInflightWithTimeout(map, key, promise) {
+  map.set(key, promise);
+  const timer = setTimeout(() => {
+    if (map.get(key) === promise) {
+      map.delete(key);
+      console.warn(`[browse-singleflight] 超时清理 key=${key.slice(0, 80)}`);
+    }
+  }, BROWSE_INFLIGHT_TIMEOUT_MS);
+  promise.finally(() => clearTimeout(timer));
+}
+
 const inflightFolderSummaryCompute = new Map();
 
 const buildFolderSummaryComputeUserKey = (userIdOrInfo, userType) => {
@@ -86,7 +100,7 @@ const computeFolderSummaryByTraversalSingleflight = async (mountId, dirPath, fil
         inflightFolderSummaryCompute.delete(key);
       }
     })();
-    inflightFolderSummaryCompute.set(key, inflight);
+    setInflightWithTimeout(inflightFolderSummaryCompute, key, inflight);
   }
 
   return inflight;
@@ -145,7 +159,7 @@ const computeDirectChildDirSummariesSingleflight = async (
         inflightDirectChildDirSummaries.delete(key);
       }
     })();
-    inflightDirectChildDirSummaries.set(key, inflight);
+    setInflightWithTimeout(inflightDirectChildDirSummaries, key, inflight);
   }
 
   return inflight;

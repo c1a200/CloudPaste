@@ -141,104 +141,51 @@ export class ScheduledTaskRegistry {
 export const scheduledTaskRegistry = new ScheduledTaskRegistry();
 
 /**
- * 注册内建的维护任务处理器
- * - 注意：在应用启动阶段调用一次
+ * 注册内建的维护任务处理器（返回 Promise，可 await 确保注册完成）
+ * - 在应用启动阶段调用一次
+ * - 返回 Promise 以便调用方等待所有 handler 注册完毕，
+ *   避免 scheduled 事件在冷启动时因 handler 未就绪而跳过任务
+ * @returns {Promise<void>}
  */
+let _handlersReadyPromise = null;
+
 export function registerScheduledHandlers() {
-  // 动态导入内建任务处理器，避免 Workers 打包阶段静态分析冲突
+  if (_handlersReadyPromise) return _handlersReadyPromise;
 
-  // 1) upload_sessions 清理任务
-  import("./tasks/CleanupUploadSessionsTask.js")
-    .then((mod) => {
-      const TaskCtor = mod.CleanupUploadSessionsTask;
-      if (TaskCtor) {
-        const taskInstance = new TaskCtor();
-        scheduledTaskRegistry.register(taskInstance);
-        console.log(
-          `[ScheduledTaskRegistry] 成功注册调度任务: ${taskInstance.id}`,
-        );
+  const taskImports = [
+    { path: "./tasks/CleanupUploadSessionsTask.js", exportName: "CleanupUploadSessionsTask" },
+    { path: "./tasks/ScheduledSyncCopyTask.js", exportName: "ScheduledSyncCopyTask" },
+    { path: "./tasks/ScheduledFsIndexRebuildTask.js", exportName: "ScheduledFsIndexRebuildTask" },
+    { path: "./tasks/ScheduledFsIndexApplyDirtyTask.js", exportName: "ScheduledFsIndexApplyDirtyTask" },
+    { path: "./tasks/RefreshStorageUsageSnapshotsTask.js", exportName: "RefreshStorageUsageSnapshotsTask" },
+  ];
+
+  _handlersReadyPromise = Promise.allSettled(
+    taskImports.map(async ({ path, exportName }) => {
+      try {
+        const mod = await import(path);
+        const TaskCtor = mod[exportName];
+        if (TaskCtor) {
+          const taskInstance = new TaskCtor();
+          scheduledTaskRegistry.register(taskInstance);
+          console.log(`[ScheduledTaskRegistry] 成功注册调度任务: ${taskInstance.id}`);
+        }
+      } catch (err) {
+        console.warn(`[ScheduledTaskRegistry] 注册 ${exportName} 失败:`, err);
       }
     })
-    .catch((err) => {
-      console.warn(
-        "[ScheduledTaskRegistry] 注册 CleanupUploadSessionsTask 失败:",
-        err,
-      );
-    });
+  ).then(() => {
+    console.log(`[ScheduledTaskRegistry] 所有调度任务注册完毕，共 ${scheduledTaskRegistry.handlers.size} 个`);
+  });
 
-  // 2) 跨驱动同步任务（基于 copy Job 的单向同步）
-  import("./tasks/ScheduledSyncCopyTask.js")
-    .then((mod) => {
-      const TaskCtor = mod.ScheduledSyncCopyTask;
-      if (TaskCtor) {
-        const taskInstance = new TaskCtor();
-        scheduledTaskRegistry.register(taskInstance);
-        console.log(
-          `[ScheduledTaskRegistry] 成功注册调度任务: ${taskInstance.id}`,
-        );
-      }
-    })
-    .catch((err) => {
-      console.warn(
-        "[ScheduledTaskRegistry] 注册 ScheduledSyncCopyTask 失败:",
-        err,
-      );
-    });
+  return _handlersReadyPromise;
+}
 
-  // 3) FS 搜索索引重建（可选业务任务；不默认创建 scheduled_jobs 记录）
-  import("./tasks/ScheduledFsIndexRebuildTask.js")
-    .then((mod) => {
-      const TaskCtor = mod.ScheduledFsIndexRebuildTask;
-      if (TaskCtor) {
-        const taskInstance = new TaskCtor();
-        scheduledTaskRegistry.register(taskInstance);
-        console.log(
-          `[ScheduledTaskRegistry] 成功注册调度任务: ${taskInstance.id}`,
-        );
-      }
-    })
-    .catch((err) => {
-      console.warn(
-        "[ScheduledTaskRegistry] 注册 ScheduledFsIndexRebuildTask 失败:",
-        err,
-      );
-    });
-
-  // 4) FS 搜索索引 dirty 增量应用（可选业务任务；不默认创建 scheduled_jobs 记录）
-  import("./tasks/ScheduledFsIndexApplyDirtyTask.js")
-    .then((mod) => {
-      const TaskCtor = mod.ScheduledFsIndexApplyDirtyTask;
-      if (TaskCtor) {
-        const taskInstance = new TaskCtor();
-        scheduledTaskRegistry.register(taskInstance);
-        console.log(
-          `[ScheduledTaskRegistry] 成功注册调度任务: ${taskInstance.id}`,
-        );
-      }
-    })
-    .catch((err) => {
-      console.warn(
-        "[ScheduledTaskRegistry] 注册 ScheduledFsIndexApplyDirtyTask 失败:",
-        err,
-      );
-    });
-
-  // 5) 存储用量快照刷新（默认创建 scheduled_jobs 记录）
-  import("./tasks/RefreshStorageUsageSnapshotsTask.js")
-    .then((mod) => {
-      const TaskCtor = mod.RefreshStorageUsageSnapshotsTask;
-      if (TaskCtor) {
-        const taskInstance = new TaskCtor();
-        scheduledTaskRegistry.register(taskInstance);
-        console.log(
-          `[ScheduledTaskRegistry] 成功注册调度任务: ${taskInstance.id}`,
-        );
-      }
-    })
-    .catch((err) => {
-      console.warn(
-        "[ScheduledTaskRegistry] 注册 RefreshStorageUsageSnapshotsTask 失败:",
-        err,
-      );
-    });
+/**
+ * 等待所有调度任务处理器注册完毕
+ * - 在 scheduled handler / runDueScheduledJobs 执行前调用
+ * @returns {Promise<void>}
+ */
+export function waitForHandlersReady() {
+  return _handlersReadyPromise || Promise.resolve();
 }

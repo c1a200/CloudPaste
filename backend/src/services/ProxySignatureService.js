@@ -11,7 +11,10 @@ export class ProxySignatureService {
   constructor(db, encryptionSecret, repositoryFactory = null) {
     this.db = db;
     this.secret = encryptionSecret;
-    this.configCache = new Map(); // 配置缓存
+    // 配置缓存：存储 { value, expiresAt } 结构，读取时检查过期
+    // 不依赖 setTimeout（在 Workers 中 timer 可能不会执行）
+    this.configCache = new Map();
+    this._cacheTtlMs = 5 * 60 * 1000; // 5 分钟
 
     const factory = ensureRepositoryFactory(db, repositoryFactory);
     this.systemRepository = factory.getSystemRepository();
@@ -204,18 +207,28 @@ export class ProxySignatureService {
   async _getSystemSetting(key) {
     const cacheKey = `setting_${key}`;
 
-    // 检查缓存
-    if (this.configCache.has(cacheKey)) {
-      return this.configCache.get(cacheKey);
+    // 检查缓存（带 TTL 过期检查，不依赖 setTimeout）
+    const cached = this.configCache.get(cacheKey);
+    if (cached && Date.now() < cached.expiresAt) {
+      return cached.value;
+    }
+    // 过期或不存在，清理旧条目
+    if (cached) {
+      this.configCache.delete(cacheKey);
     }
 
     try {
       const setting = await this.systemRepository.getSettingMetadata(key);
       const value = setting ? setting.value : "";
 
-      // 缓存5分钟
-      this.configCache.set(cacheKey, value);
-      setTimeout(() => this.configCache.delete(cacheKey), 5 * 60 * 1000);
+      // 缓存并记录过期时间
+      this.configCache.set(cacheKey, { value, expiresAt: Date.now() + this._cacheTtlMs });
+
+      // 防止无限增长（最多 50 个配置项）
+      if (this.configCache.size > 50) {
+        const oldestKey = this.configCache.keys().next().value;
+        if (oldestKey !== undefined) this.configCache.delete(oldestKey);
+      }
 
       return value;
     } catch (error) {
