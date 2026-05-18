@@ -23,6 +23,7 @@ import scheduledRoutes from "./routes/scheduledRoutes.js";
 import { securityContext } from "./security/middleware/securityContext.js";
 import { withRepositories } from "./utils/repositories.js";
 import { errorBoundary } from "./http/middlewares/errorBoundary.js";
+import cacheBus from "./cache/cacheBus.js";
 import { normalizeError, sanitizeErrorMessageForClient } from "./http/errors.js";
 
 const getTimeSource = () => {
@@ -104,6 +105,18 @@ const app = new Hono();
 
 // 注册中间件
 app.use("*", structuredLogger);
+
+// 确保异步缓存失效操作在 Workers 中不被提前终止
+// 在请求处理完成后，将 cacheBus 中待完成的 async 操作通过 waitUntil 延长执行生命周期
+app.use("*", async (c, next) => {
+  await next();
+  // 将缓存失效等异步操作的 Promise 注册到 Workers 执行上下文
+  const ctx = c.executionCtx;
+  if (ctx && typeof ctx.waitUntil === "function") {
+    const flushPromise = cacheBus.flush();
+    ctx.waitUntil(flushPromise);
+  }
+});
 // 导入WebDAV配置
 import { WEBDAV_BASE_PATH } from "./webdav/auth/config/WebDAVConfig.js";
 

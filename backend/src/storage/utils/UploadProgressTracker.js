@@ -3,8 +3,11 @@
  * 目前仅用于内部记录和日志，后续可扩展为对外查询接口
  */
 
-/** @type {Map<string, { id: string; loaded: number; total: number|null; path?: string|null; storageType?: string|null; updatedAt: number; completed: boolean }>} */
-const progressStore = new Map();
+import { BoundedMap } from "../../utils/BoundedMap.js";
+
+// 上传进度最多保留 500 条记录，超过 30 分钟自动过期（防止中断的上传残留）
+/** @type {BoundedMap} */
+const progressStore = new BoundedMap({ maxSize: 500, ttlMs: 30 * 60 * 1000, name: "UploadProgressStore" });
 
 /**
  * 更新上传进度

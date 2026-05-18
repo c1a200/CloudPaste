@@ -9,6 +9,7 @@
 import { scheduledTaskRegistry } from "./ScheduledTaskRegistry.js";
 import { recordScheduledJobRun } from "../services/scheduledJobRunService.js";
 import { CronExpressionParser } from "cron-parser";
+import { withD1Retry } from "../utils/d1Retry.js";
 
 /**
  * 尝试为指定任务获取锁
@@ -21,18 +22,22 @@ import { CronExpressionParser } from "cron-parser";
 async function tryAcquireLock(db, taskId, nowIso, lockTimeoutSec) {
   const lockUntil = new Date(Date.now() + lockTimeoutSec * 1000).toISOString();
 
-  const result = await db
-    .prepare(
-      `
+  const result = await withD1Retry(
+    () =>
+      db
+        .prepare(
+          `
       UPDATE scheduled_jobs
       SET lock_until = ?
       WHERE task_id = ?
         AND enabled = 1
         AND (lock_until IS NULL OR lock_until <= ?)
     `,
-    )
-    .bind(lockUntil, taskId, nowIso)
-    .run();
+        )
+        .bind(lockUntil, taskId, nowIso)
+        .run(),
+    { label: `tryAcquireLock(${taskId})` }
+  );
 
   const changes = result?.meta?.changes ?? result?.changes ?? 0;
   return changes > 0;
@@ -199,7 +204,10 @@ async function updateTaskSchedule(db, row, ctx) {
     `;
   binds.push(row.task_id);
 
-  await db.prepare(sql).bind(...binds).run();
+  await withD1Retry(
+    () => db.prepare(sql).bind(...binds).run(),
+    { label: `updateTaskSchedule(${row.task_id})` }
+  );
 }
 
 
@@ -225,10 +233,12 @@ export async function runDueScheduledJobs(db, env, options = {}) {
   const lockTimeoutSec = Number(options.lockTimeoutSec) || 300; // 默认 5 分钟锁过期
   const nowIso = new Date().toISOString();
 
-  // 1. 查询到期且启用的作业
-  const result = await db
-    .prepare(
-      `
+  // 1. 查询到期且启用的作业（带 D1 重试保护）
+  const result = await withD1Retry(
+    () =>
+      db
+        .prepare(
+          `
       SELECT
         task_id,
         handler_id,
@@ -244,9 +254,11 @@ export async function runDueScheduledJobs(db, env, options = {}) {
       WHERE enabled = 1
         AND (next_run_after IS NULL OR next_run_after <= ?)
     `,
-    )
-    .bind(nowIso)
-    .all();
+        )
+        .bind(nowIso)
+        .all(),
+    { label: "queryDueScheduledJobs" }
+  );
 
   const rows = result?.results || [];
   if (!rows.length) {

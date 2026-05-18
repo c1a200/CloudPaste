@@ -7,7 +7,23 @@ import { directoryCacheManager } from "../../../cache/index.js";
 
 // 同一目录同一时刻只允许一次真实 list（防止并发把存储打爆）
 // key = mountId:subPath:(refresh?1:0)
+// 使用超时保护：若某个 Promise 超过 60 秒仍未 resolve，自动从 Map 中移除
+// 防止异常挂起导致后续请求永远等待同一个 dead Promise
+const INFLIGHT_TIMEOUT_MS = 60 * 1000;
 const inflightDirectoryList = new Map();
+
+function setInflightWithTimeout(map, key, promise) {
+  map.set(key, promise);
+  // 超时兜底：即使 .finally 未被执行（极端情况），也保证清理
+  const timer = setTimeout(() => {
+    if (map.get(key) === promise) {
+      map.delete(key);
+      console.warn(`[singleflight] 超时清理 key=${key.slice(0, 80)}`);
+    }
+  }, INFLIGHT_TIMEOUT_MS);
+  // 正常完成时取消定时器
+  promise.finally(() => clearTimeout(timer));
+}
 
 const cloneDirectoryResult = (result) => {
   if (!result || typeof result !== "object") return result;
@@ -153,7 +169,7 @@ export async function listDirectory(fs, path, userIdOrInfo, userType, options = 
       inflightDirectoryList.delete(inflightKey);
     });
 
-  inflightDirectoryList.set(inflightKey, fetchPromise);
+  setInflightWithTimeout(inflightDirectoryList, inflightKey, fetchPromise);
   return await fetchPromise;
 }
 

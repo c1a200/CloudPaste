@@ -14,10 +14,13 @@ import { LinkService } from "../../storage/link/LinkService.js";
 import { StorageStreaming, STREAMING_CHANNELS } from "../../storage/streaming/index.js";
 import { CAPABILITIES } from "../../storage/interfaces/capabilities/index.js";
 
+import { BoundedSet } from "../../utils/BoundedMap.js";
+
 // Windows MiniRedir 302自动降级：
 // - 对同一路径，第一次请求按挂载策略走 302
 // - 如果客户端再次通过 WebDAV GET 同一路径，则视为 302 可能不可靠，后续该路径强制走本地代理
-const miniRedirTried302 = new Set();
+// - 限制最大 500 条路径 + 10 分钟 TTL，避免 isolate 长期存活时无限增长
+const miniRedirTried302 = new BoundedSet({ maxSize: 500, ttlMs: 10 * 60 * 1000 });
 
 /**
  * 从驱动返回结果中提取 URL

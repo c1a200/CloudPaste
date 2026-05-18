@@ -246,8 +246,8 @@ export class MountManager {
           });
         }
 
-        // 指数退避：1秒、2秒、3秒
-        const delay = 1000 * (i + 1);
+        // 快速退避：100ms、200ms、400ms（Workers 环境有 CPU 时间限制，避免长等待）
+        const delay = 100 * Math.pow(2, i);
         await new Promise((resolve) => setTimeout(resolve, delay));
       }
     }

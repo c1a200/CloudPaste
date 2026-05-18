@@ -44,6 +44,16 @@ const localDuInFlight = new Map(); // key -> Promise
 // 已使用缓存（短 TTL）：避免 multipart/upload-chunk 这类高频入口重复跑 SQL/du
 const computedUsageCache = new Map(); // key -> { value, expiresAtMs }
 
+// 安全设置缓存条目（带容量限制，防止 isolate 长期存活时内存无限增长）
+const CACHE_MAX_ENTRIES = 200;
+function safeCacheSet(cache, key, entry) {
+  cache.set(key, entry);
+  if (cache.size > CACHE_MAX_ENTRIES) {
+    const oldestKey = cache.keys().next().value;
+    if (oldestKey !== undefined) cache.delete(oldestKey);
+  }
+}
+
 function nowMs() {
   return Date.now();
 }
@@ -264,7 +274,7 @@ export class StorageUsageService {
         },
         "磁盘占用统计未启用（enable_disk_usage = false）",
       );
-      providerQuotaCache.set(cacheKey, { value, expiresAtMs: nowMs() + PROVIDER_QUOTA_CACHE_TTL_MS });
+      safeCacheSet(providerQuotaCache, cacheKey, { value, expiresAtMs: nowMs() + PROVIDER_QUOTA_CACHE_TTL_MS });
       return value;
     }
 
@@ -272,7 +282,7 @@ export class StorageUsageService {
       const driver = await StorageFactory.createDriver(cfg.storage_type, cfg, this.encryptionSecret);
       if (!driver || typeof driver.getStats !== "function") {
         const value = buildQuotaSupportedFalse({ type: cfg.storage_type }, "驱动未实现 getStats，无法读取配额");
-        providerQuotaCache.set(cacheKey, { value, expiresAtMs: nowMs() + PROVIDER_QUOTA_CACHE_TTL_MS });
+        safeCacheSet(providerQuotaCache, cacheKey, { value, expiresAtMs: nowMs() + PROVIDER_QUOTA_CACHE_TTL_MS });
         return value;
       }
 
@@ -295,14 +305,14 @@ export class StorageUsageService {
             typeof stats?.message === "string" ? stats.message : "上游未提供配额信息",
           );
 
-      providerQuotaCache.set(cacheKey, { value, expiresAtMs: nowMs() + PROVIDER_QUOTA_CACHE_TTL_MS });
+      safeCacheSet(providerQuotaCache, cacheKey, { value, expiresAtMs: nowMs() + PROVIDER_QUOTA_CACHE_TTL_MS });
       return value;
     } catch (error) {
       const value = buildQuotaSupportedFalse(
         { type: cfg.storage_type, error: error?.message ? String(error.message) : String(error) },
         error?.message ? `读取上游配额失败：${error.message}` : "读取上游配额失败",
       );
-      providerQuotaCache.set(cacheKey, { value, expiresAtMs: nowMs() + PROVIDER_QUOTA_CACHE_TTL_MS });
+      safeCacheSet(providerQuotaCache, cacheKey, { value, expiresAtMs: nowMs() + PROVIDER_QUOTA_CACHE_TTL_MS });
       return value;
     }
   }
@@ -438,7 +448,7 @@ export class StorageUsageService {
     const promise = this._scanDirectoryDu(rootPath)
       .then((bytes) => {
         const value = bytes != null ? bytes : null;
-        localDuCache.set(cacheKey, { value, expiresAtMs: nowMs() + LOCAL_DU_CACHE_TTL_MS });
+        safeCacheSet(localDuCache, cacheKey, { value, expiresAtMs: nowMs() + LOCAL_DU_CACHE_TTL_MS });
         return value;
       })
       .finally(() => {
@@ -532,7 +542,7 @@ export class StorageUsageService {
       const localUsed = await this.getLocalFsUsedBytes(cfg).catch(() => null);
       if (localUsed != null) {
         const value = { usedBytes: localUsed, source: "local_fs" };
-        computedUsageCache.set(cacheKey, { value, expiresAtMs: nowMs() + COMPUTED_USAGE_CACHE_TTL_MS });
+        safeCacheSet(computedUsageCache, cacheKey, { value, expiresAtMs: nowMs() + COMPUTED_USAGE_CACHE_TTL_MS });
         return value;
       }
     }
@@ -550,7 +560,7 @@ export class StorageUsageService {
             source: "provider",
             details: providerQuota ? { quota: providerQuota } : undefined,
           };
-          computedUsageCache.set(cacheKey, { value, expiresAtMs: nowMs() + COMPUTED_USAGE_CACHE_TTL_MS });
+          safeCacheSet(computedUsageCache, cacheKey, { value, expiresAtMs: nowMs() + COMPUTED_USAGE_CACHE_TTL_MS });
           return value;
         }
       }
@@ -560,7 +570,7 @@ export class StorageUsageService {
     const vfsUsed = await this.getVfsNodesUsedBytes(storageConfigId).catch(() => null);
     if (vfsUsed != null) {
       const value = { usedBytes: vfsUsed, source: "vfs_nodes" };
-      computedUsageCache.set(cacheKey, { value, expiresAtMs: nowMs() + COMPUTED_USAGE_CACHE_TTL_MS });
+      safeCacheSet(computedUsageCache, cacheKey, { value, expiresAtMs: nowMs() + COMPUTED_USAGE_CACHE_TTL_MS });
       return value;
     }
 
@@ -569,11 +579,11 @@ export class StorageUsageService {
     const idxUsed = clampNonNegativeInt(indexRes?.usedBytes);
     if (idxUsed != null) {
       const value = { usedBytes: idxUsed, source: "fs_index", details: { staleMountIds: indexRes?.staleMountIds || [] } };
-      computedUsageCache.set(cacheKey, { value, expiresAtMs: nowMs() + COMPUTED_USAGE_CACHE_TTL_MS });
+      safeCacheSet(computedUsageCache, cacheKey, { value, expiresAtMs: nowMs() + COMPUTED_USAGE_CACHE_TTL_MS });
       return value;
     }
 
-    computedUsageCache.set(cacheKey, { value: null, expiresAtMs: nowMs() + COMPUTED_USAGE_CACHE_TTL_MS });
+    safeCacheSet(computedUsageCache, cacheKey, { value: null, expiresAtMs: nowMs() + COMPUTED_USAGE_CACHE_TTL_MS });
     return null;
   }
 }
